@@ -1,0 +1,5 @@
+{
+  "name": "Excel-like Green Task Manager",
+  "description": "A task management dashboard with a green theme and timeline bars to track deadlines.",
+  "requestFramePermissions": []
+}
