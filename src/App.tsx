@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { format, differenceInDays, isBefore, startOfDay, parseISO, eachDayOfInterval, addDays, isSameDay, min, addMonths } from 'date-fns';
 import { id as localeId } from 'date-fns/locale';
-import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle } from 'lucide-react';
+import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban } from 'lucide-react';
 import { Task } from './types';
 
 const CELL_WIDTH = 40; // width of each day cell in pixels
@@ -42,6 +42,8 @@ const getWorkingDaysCount = (startDate: Date, endDate: Date): number => {
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [activeProject, setActiveProject] = useState<string>('lokasi1');
+  
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskDuration, setNewTaskDuration] = useState<number | ''>(7);
   const [projectEndDate, setProjectEndDate] = useState(format(addMonths(new Date(), 1), 'yyyy-MM-dd'));
@@ -146,6 +148,7 @@ export default function App() {
       deadline: deadlineDate,
       duration: duration,
       status: 'pending',
+      projectId: activeProject,
     };
 
     setTasks([...tasks, newTask]);
@@ -167,12 +170,15 @@ export default function App() {
     setProjectEndDate(prev => format(addDays(parseISO(prev), 30), 'yyyy-MM-dd'));
   };
 
+  // Filter tasks by active project
+  const currentProjectTasks = tasks.filter(t => (t.projectId || 'lokasi1') === activeProject);
+
   // Calculate timeline range
   const timelineStart = useMemo(() => {
-    if (tasks.length === 0) return startOfDay(new Date());
-    const minDate = min(tasks.map(t => parseISO(t.startDate)));
+    if (currentProjectTasks.length === 0) return startOfDay(new Date());
+    const minDate = min(currentProjectTasks.map(t => parseISO(t.startDate)));
     return min([minDate, startOfDay(new Date())]);
-  }, [tasks]);
+  }, [currentProjectTasks]);
 
   const timelineRange = useMemo(() => {
     const end = parseISO(projectEndDate);
@@ -204,22 +210,57 @@ export default function App() {
     return grouped;
   }, [timelineRange]);
 
-  const completedCount = tasks.filter(t => t.status === 'completed').length;
-  const pendingCount = tasks.length - completedCount;
+  const completedCount = currentProjectTasks.filter(t => t.status === 'completed').length;
+  const pendingCount = currentProjectTasks.length - completedCount;
+
+  const projects = [
+    { id: 'lokasi1', name: 'Proyek Lokasi 1' },
+    { id: 'lokasi2', name: 'Proyek Lokasi 2' }
+  ];
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 font-sans p-4 md:p-6 flex flex-col h-screen">
-      <div className="max-w-[1600px] mx-auto w-full flex flex-col h-full space-y-4">
+    <div className="h-screen w-full bg-gray-50 text-gray-900 font-sans flex overflow-hidden">
+      
+      {/* Sidebar Dashboard */}
+      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col shrink-0 z-30 shadow-sm">
+        <div className="h-16 bg-[#107c41] flex items-center px-4 shrink-0">
+          <h1 className="text-xl font-bold text-white flex items-center gap-2">
+            <Calendar className="w-6 h-6 text-green-100" />
+            Gantt Excel
+          </h1>
+        </div>
+        <div className="p-4">
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Daftar Proyek</h2>
+          <div className="flex flex-col gap-1">
+            {projects.map(project => (
+              <button
+                key={project.id}
+                onClick={() => setActiveProject(project.id)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                  activeProject === project.id 
+                    ? 'bg-[#e6f2eb] text-[#107c41]' 
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+              >
+                <FolderKanban className={`w-4 h-4 ${activeProject === project.id ? 'text-[#107c41]' : 'text-gray-400'}`} />
+                {project.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-4">
         
         {/* Header Section */}
-        <header className="bg-[#107c41] rounded-xl shadow-md border-b border-[#185c37] p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 text-white">
+        <header className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
           <div className="flex flex-col gap-2">
-            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-              <Calendar className="w-7 h-7 text-green-100" />
-              Lini Masa Proyek
-            </h1>
+            <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+              {projects.find(p => p.id === activeProject)?.name}
+            </h2>
             <div className="flex items-center gap-2 mt-1">
-              <label htmlFor="projectEnd" className="text-sm font-semibold text-green-50">
+              <label htmlFor="projectEnd" className="text-sm font-semibold text-gray-600">
                 Batas Akhir Proyek (Scroll):
               </label>
               <input
@@ -227,20 +268,19 @@ export default function App() {
                 type="date"
                 value={projectEndDate}
                 onChange={(e) => setProjectEndDate(e.target.value)}
-                className="px-2 py-1 text-sm rounded border border-[#185c37] focus:outline-none focus:ring-2 focus:ring-white bg-[#0c5e31] text-white font-medium color-scheme-dark"
-                style={{ colorScheme: 'dark' }}
+                className="px-2 py-1 text-sm rounded border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] bg-gray-50 text-gray-900 font-medium"
               />
               <button 
                 onClick={extendProjectEndDate}
-                className="px-2 py-1 text-xs bg-white/10 text-white rounded hover:bg-white/20 font-medium transition-colors border border-white/20"
+                className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium transition-colors border border-gray-200"
                 title="Tambah 30 hari ke batas scroll"
               >
                 + 30 Hari
               </button>
-              <div className="w-px h-4 bg-white/30 mx-1"></div>
+              <div className="w-px h-4 bg-gray-300 mx-1"></div>
               <button 
                 onClick={toggleDayFormat}
-                className="px-2 py-1 text-xs bg-white/10 text-white rounded hover:bg-white/20 font-medium transition-colors flex items-center gap-1 border border-white/20"
+                className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium transition-colors flex items-center gap-1 border border-gray-200"
                 title="Ubah format nama hari"
               >
                 Hari: {formatLabel}
@@ -249,17 +289,17 @@ export default function App() {
           </div>
           
           <div className="flex gap-3">
-            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-white">{tasks.length}</span>
-              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Total</span>
+            <div className="bg-gray-50 px-4 py-2 rounded-lg border border-gray-200 flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-gray-800">{currentProjectTasks.length}</span>
+              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Total</span>
             </div>
-            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-white">{completedCount}</span>
-              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Selesai</span>
+            <div className="bg-[#e6f2eb] px-4 py-2 rounded-lg border border-[#cce4d6] flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-[#107c41]">{completedCount}</span>
+              <span className="text-[10px] font-bold text-[#107c41] uppercase tracking-wider">Selesai</span>
             </div>
-            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-white">{pendingCount}</span>
-              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Tertunda</span>
+            <div className="bg-amber-50 px-4 py-2 rounded-lg border border-amber-100 flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-amber-600">{pendingCount}</span>
+              <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Tertunda</span>
             </div>
           </div>
         </header>
@@ -315,10 +355,10 @@ export default function App() {
               
               {/* Task Rows */}
               <div className="overflow-y-auto flex-1 custom-scrollbar">
-                {tasks.length === 0 ? (
+                {currentProjectTasks.length === 0 ? (
                   <div className="p-4 text-sm text-gray-400 text-center mt-10">Belum ada pekerjaan yang ditambahkan.</div>
                 ) : (
-                  tasks.map(task => (
+                  currentProjectTasks.map(task => (
                     <div key={task.id} className="h-12 border-b border-gray-100 flex items-center px-4 hover:bg-gray-50 transition-colors group">
                       <button 
                         onClick={() => toggleTaskStatus(task.id)}
@@ -413,7 +453,7 @@ export default function App() {
 
                 {/* Task Bars */}
                 <div className="relative">
-                  {tasks.map((task) => {
+                  {currentProjectTasks.map((task) => {
                     const isDragging = dragState?.taskId === task.id && dragState.type === 'move';
                     const isResizing = dragState?.taskId === task.id && dragState.type === 'resize';
                     const deltaDays = (isDragging || isResizing) ? dragState.deltaDays : 0;
@@ -512,7 +552,7 @@ export default function App() {
             
           </div>
         </section>
-      </div>
+      </main>
       
       {/* Custom Scrollbar Styles */}
       <style dangerouslySetInnerHTML={{__html: `

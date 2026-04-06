@@ -6,4 +6,5 @@ export interface Task {
   deadline: string;
   duration?: number;
   status: 'pending' | 'completed';
+  projectId?: string;
 }
