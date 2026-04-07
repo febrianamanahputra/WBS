@@ -1,0 +1,99 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: locations
+    // Document ID: {locationId}
+    // Fields:
+    //   - name: string (required)
+    //   - projectEndDate: string (optional)
+    //
+    // Collection: workers
+    // Document ID: {workerId}
+    // Fields:
+    //   - name: string (required)
+    //   - color: string (required)
+    //   - locationId: string (required)
+    //
+    // Collection: tasks
+    // Document ID: {taskId}
+    // Fields:
+    //   - name: string (required)
+    //   - createdAt: string (required)
+    //   - startDate: string (required)
+    //   - deadline: string (required)
+    //   - duration: number (optional)
+    //   - status: string (required, 'pending' or 'completed')
+    //   - workerId: string (optional)
+    //   - locationId: string (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function isValidLocation(data) {
+      return hasOnlyAllowedFields(['name', 'projectEndDate']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('projectEndDate' in data) || data.projectEndDate is string);
+    }
+
+    function isValidWorker(data) {
+      return hasOnlyAllowedFields(['name', 'color', 'locationId']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.color is string && data.color.size() > 0 && data.color.size() < 20 &&
+             data.locationId is string && data.locationId.size() > 0;
+    }
+
+    function isValidTask(data) {
+      return hasOnlyAllowedFields(['name', 'createdAt', 'startDate', 'deadline', 'duration', 'status', 'workerId', 'locationId']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.createdAt is string &&
+             data.startDate is string &&
+             data.deadline is string &&
+             (!('duration' in data) || data.duration is number) &&
+             data.status in ['pending', 'completed'] &&
+             (!('workerId' in data) || data.workerId is string) &&
+             data.locationId is string && data.locationId.size() > 0;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /locations/{locationId} {
+      // Anyone can read
+      allow read: if true;
+      // Only authenticated users can write
+      allow create: if isAuthenticated() && isValidLocation(request.resource.data);
+      allow update: if isAuthenticated() && isValidLocation(request.resource.data);
+      allow delete: if isAuthenticated();
+    }
+
+    match /workers/{workerId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidWorker(request.resource.data);
+      allow update: if isAuthenticated() && isValidWorker(request.resource.data);
+      allow delete: if isAuthenticated();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidTask(request.resource.data);
+      allow update: if isAuthenticated() && isValidTask(request.resource.data);
+      allow delete: if isAuthenticated();
+    }
+  }
+}

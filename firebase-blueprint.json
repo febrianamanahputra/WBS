@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "Location": {
+      "title": "Location",
+      "description": "A project location",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "projectEndDate": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "Worker": {
+      "title": "Worker",
+      "description": "A worker assigned to tasks",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "color": { "type": "string" },
+        "locationId": { "type": "string" }
+      },
+      "required": ["name", "color", "locationId"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A task in the action plan",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "startDate": { "type": "string" },
+        "deadline": { "type": "string" },
+        "duration": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "workerId": { "type": "string" },
+        "locationId": { "type": "string" }
+      },
+      "required": ["name", "createdAt", "startDate", "deadline", "status", "locationId"]
+    }
+  },
+  "firestore": {
+    "/locations/{locationId}": {
+      "schema": { "$ref": "#/entities/Location" },
+      "description": "Project locations"
+    },
+    "/workers/{workerId}": {
+      "schema": { "$ref": "#/entities/Worker" },
+      "description": "Workers for projects"
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Tasks for projects"
+    }
+  }
+}

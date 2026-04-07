@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { format, differenceInDays, isBefore, startOfDay, parseISO, eachDayOfInterval, addDays, isSameDay, min, addMonths } from 'date-fns';
 import { id as localeId } from 'date-fns/locale';
-import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban } from 'lucide-react';
-import { Task } from './types';
+import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban, UserPlus, X, GripVertical, MapPin, Printer, LogIn, LogOut } from 'lucide-react';
+import { Task, Worker, Location } from './types';
+import { db, auth, signInWithGoogle, logOut } from './firebase';
+import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query, where, writeBatch } from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
 
 const CELL_WIDTH = 40; // width of each day cell in pixels
 
@@ -41,11 +44,26 @@ const getWorkingDaysCount = (startDate: Date, endDate: Date): number => {
 };
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [currentLocationId, setCurrentLocationId] = useState<string>('');
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const [newLocationName, setNewLocationName] = useState('');
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [activeProject, setActiveProject] = useState<string>('lokasi1');
+  const [workers, setWorkers] = useState<Worker[]>([]);
   
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskDuration, setNewTaskDuration] = useState<number | ''>(7);
+  const [newTaskWorkerId, setNewTaskWorkerId] = useState<string>('');
+  
+  const [newWorkerName, setNewWorkerName] = useState('');
+  const [newWorkerColor, setNewWorkerColor] = useState('#eab308'); // Default yellow
+  const [isWorkerModalOpen, setIsWorkerModalOpen] = useState(false);
+  
   const [projectEndDate, setProjectEndDate] = useState(format(addMonths(new Date(), 1), 'yyyy-MM-dd'));
   const [dayNameFormat, setDayNameFormat] = useState<'EEEEE' | 'EEE' | 'EEEE'>('EEE');
 
@@ -67,22 +85,106 @@ export default function App() {
     type: 'move' | 'resize';
   } | null>(null);
 
-  // Load tasks from local storage on initial render
+  const [paneDrag, setPaneDrag] = useState<{ startX: number; startWidth: number } | null>(null);
+  const [leftPaneWidth, setLeftPaneWidth] = useState(320);
+
   useEffect(() => {
-    const savedTasks = localStorage.getItem('tasks');
-    if (savedTasks) {
-      try {
-        setTasks(JSON.parse(savedTasks));
-      } catch (e) {
-        console.error('Failed to parse tasks from local storage', e);
-      }
-    }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
   }, []);
 
-  // Save tasks to local storage whenever they change
+  // Load locations from Firebase
   useEffect(() => {
-    localStorage.setItem('tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    if (!isAuthReady) return;
+
+    const unsubscribe = onSnapshot(collection(db, 'locations'), (snapshot) => {
+      const loadedLocations: Location[] = [];
+      snapshot.forEach((doc) => {
+        loadedLocations.push({ id: doc.id, ...doc.data() } as Location);
+      });
+      
+      if (loadedLocations.length > 0) {
+        setLocations(loadedLocations);
+        if (!currentLocationId || !loadedLocations.find(l => l.id === currentLocationId)) {
+          setCurrentLocationId(loadedLocations[0].id);
+        }
+      } else {
+        // Create default location if none exists
+        if (user) {
+          const defaultLoc = { name: 'Proyek Utama', projectEndDate: format(addMonths(new Date(), 1), 'yyyy-MM-dd') };
+          setDoc(doc(collection(db, 'locations')), defaultLoc);
+        }
+      }
+      setIsInitialLoad(false);
+    }, (error) => {
+      console.error("Error fetching locations:", error);
+      setIsInitialLoad(false);
+    });
+
+    return () => unsubscribe();
+  }, [isAuthReady, user]);
+
+  // Load tasks, workers, and settings when location changes
+  useEffect(() => {
+    if (isInitialLoad || !currentLocationId || !isAuthReady) return;
+
+    // Set projectEndDate from location
+    const currentLoc = locations.find(l => l.id === currentLocationId);
+    if (currentLoc && currentLoc.projectEndDate) {
+      setProjectEndDate(currentLoc.projectEndDate);
+    }
+
+    const tasksQuery = query(collection(db, 'tasks'), where('locationId', '==', currentLocationId));
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const loadedTasks: Task[] = [];
+      snapshot.forEach((doc) => {
+        loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
+      });
+      // Sort tasks by createdAt or a specific order field if we had one.
+      // For now, we'll just sort by createdAt to keep it stable, or let the user reorder.
+      loadedTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      setTasks(loadedTasks);
+    });
+
+    const workersQuery = query(collection(db, 'workers'), where('locationId', '==', currentLocationId));
+    const unsubscribeWorkers = onSnapshot(workersQuery, (snapshot) => {
+      const loadedWorkers: Worker[] = [];
+      snapshot.forEach((doc) => {
+        loadedWorkers.push({ id: doc.id, ...doc.data() } as Worker);
+      });
+      setWorkers(loadedWorkers);
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeWorkers();
+    };
+  }, [currentLocationId, isInitialLoad, isAuthReady, locations]);
+
+  // Handle Pane Resizing
+  useEffect(() => {
+    if (!paneDrag) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const delta = e.clientX - paneDrag.startX;
+      const newWidth = Math.max(200, Math.min(800, paneDrag.startWidth + delta));
+      setLeftPaneWidth(newWidth);
+    };
+
+    const handlePointerUp = () => {
+      setPaneDrag(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [paneDrag]);
 
   // Handle Dragging and Resizing via window events
   useEffect(() => {
@@ -95,24 +197,40 @@ export default function App() {
     };
 
     const handleUp = () => {
-      setTasks(prevTasks => prevTasks.map(t => {
-        if (t.id === dragState.taskId && dragState.deltaDays !== 0) {
-          if (dragState.type === 'move') {
-            let newStart = addDays(parseISO(t.startDate), dragState.deltaDays);
-            if (newStart.getDay() === 0) newStart = addDays(newStart, 1);
-            const newEnd = addWorkingDays(newStart, t.duration);
-            return { ...t, startDate: newStart.toISOString(), deadline: newEnd.toISOString() };
-          } else if (dragState.type === 'resize') {
-            const newEnd = addDays(parseISO(t.deadline), dragState.deltaDays);
-            if (isBefore(newEnd, parseISO(t.startDate))) return t;
-            const newDuration = getWorkingDaysCount(parseISO(t.startDate), newEnd);
-            if (newDuration < 1) return t;
-            const snappedEnd = addWorkingDays(parseISO(t.startDate), newDuration);
-            return { ...t, deadline: snappedEnd.toISOString(), duration: newDuration };
+      if (!user) {
+        setDragState(null);
+        return alert("Silakan masuk untuk mengedit");
+      }
+      
+      const taskToUpdate = tasks.find(t => t.id === dragState.taskId);
+      if (taskToUpdate && dragState.deltaDays !== 0) {
+        let newStart = parseISO(taskToUpdate.startDate);
+        let newEnd = parseISO(taskToUpdate.deadline);
+        let newDuration = taskToUpdate.duration || 1;
+
+        if (dragState.type === 'move') {
+          newStart = addDays(newStart, dragState.deltaDays);
+          if (newStart.getDay() === 0) newStart = addDays(newStart, 1);
+          newEnd = addWorkingDays(newStart, newDuration);
+        } else if (dragState.type === 'resize') {
+          newEnd = addDays(newEnd, dragState.deltaDays);
+          if (!isBefore(newEnd, newStart)) {
+            newDuration = getWorkingDaysCount(newStart, newEnd);
+            if (newDuration >= 1) {
+              newEnd = addWorkingDays(newStart, newDuration);
+            } else {
+              newDuration = taskToUpdate.duration || 1;
+              newEnd = parseISO(taskToUpdate.deadline);
+            }
           }
         }
-        return t;
-      }));
+        
+        updateDoc(doc(db, 'tasks', taskToUpdate.id), {
+          startDate: newStart.toISOString(),
+          deadline: newEnd.toISOString(),
+          duration: newDuration
+        }).catch(console.error);
+      }
       setDragState(null);
     };
 
@@ -125,9 +243,10 @@ export default function App() {
     };
   }, [dragState]);
 
-  const handleAddTask = (e: React.FormEvent) => {
+  const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTaskName.trim() || !newTaskDuration) return;
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    if (!newTaskName.trim() || !newTaskDuration || !currentLocationId) return;
 
     const duration = Number(newTaskDuration);
     if (duration < 1) return;
@@ -140,45 +259,129 @@ export default function App() {
     const startDate = startDateObj.toISOString();
     const deadlineDate = addWorkingDays(startDateObj, duration).toISOString();
 
+    const newTaskId = crypto.randomUUID();
     const newTask: Task = {
-      id: crypto.randomUUID(),
+      id: newTaskId,
       name: newTaskName.trim(),
-      createdAt: today.toISOString(),
+      createdAt: new Date().toISOString(),
       startDate: startDate,
       deadline: deadlineDate,
       duration: duration,
       status: 'pending',
-      projectId: activeProject,
+      workerId: newTaskWorkerId || undefined,
+      locationId: currentLocationId
     };
 
-    setTasks([...tasks, newTask]);
-    setNewTaskName('');
-    // Keep duration as is for easy consecutive adding
+    try {
+      await setDoc(doc(db, 'tasks', newTaskId), newTask);
+      setNewTaskName('');
+    } catch (error) {
+      console.error("Error adding task:", error);
+    }
   };
 
-  const toggleTaskStatus = (id: string) => {
-    setTasks(tasks.map(task => 
-      task.id === id ? { ...task, status: task.status === 'pending' ? 'completed' : 'pending' } : task
-    ));
+  const handleAddWorker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    if (!newWorkerName.trim() || !currentLocationId) return;
+    
+    const newWorkerId = crypto.randomUUID();
+    const newWorker: Worker = {
+      id: newWorkerId,
+      name: newWorkerName.trim(),
+      color: newWorkerColor,
+      locationId: currentLocationId
+    };
+    
+    try {
+      await setDoc(doc(db, 'workers', newWorkerId), newWorker);
+      setNewWorkerName('');
+      setIsWorkerModalOpen(false);
+    } catch (error) {
+      console.error("Error adding worker:", error);
+    }
   };
 
-  const deleteTask = (id: string) => {
-    setTasks(tasks.filter(task => task.id !== id));
+  const handleDeleteWorker = async (id: string) => {
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    try {
+      await deleteDoc(doc(db, 'workers', id));
+      // Also remove worker from tasks
+      const batch = writeBatch(db);
+      tasks.filter(t => t.workerId === id).forEach(t => {
+        batch.update(doc(db, 'tasks', t.id), { workerId: null });
+      });
+      await batch.commit();
+    } catch (error) {
+      console.error("Error deleting worker:", error);
+    }
   };
 
-  const extendProjectEndDate = () => {
-    setProjectEndDate(prev => format(addDays(parseISO(prev), 30), 'yyyy-MM-dd'));
+  const handleAddLocation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    if (!newLocationName.trim()) return;
+    
+    const newLocId = crypto.randomUUID();
+    const newLoc: Location = {
+      id: newLocId,
+      name: newLocationName.trim(),
+    };
+    
+    try {
+      await setDoc(doc(db, 'locations', newLocId), newLoc);
+      setCurrentLocationId(newLocId);
+      setNewLocationName('');
+      setIsLocationModalOpen(false);
+    } catch (error) {
+      console.error("Error adding location:", error);
+    }
   };
 
-  // Filter tasks by active project
-  const currentProjectTasks = tasks.filter(t => (t.projectId || 'lokasi1') === activeProject);
+  const toggleTaskStatus = async (id: string) => {
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    const task = tasks.find(t => t.id === id);
+    if (task) {
+      try {
+        await updateDoc(doc(db, 'tasks', id), {
+          status: task.status === 'pending' ? 'completed' : 'pending'
+        });
+      } catch (error) {
+        console.error("Error toggling task status:", error);
+      }
+    }
+  };
+
+  const deleteTask = async (id: string) => {
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    try {
+      await deleteDoc(doc(db, 'tasks', id));
+    } catch (error) {
+      console.error("Error deleting task:", error);
+    }
+  };
+
+  const extendProjectEndDate = async () => {
+    if (!user) return alert("Silakan masuk untuk mengedit");
+    const newEndDate = format(addDays(parseISO(projectEndDate), 30), 'yyyy-MM-dd');
+    setProjectEndDate(newEndDate);
+    if (currentLocationId) {
+      try {
+        await updateDoc(doc(db, 'locations', currentLocationId), {
+          projectEndDate: newEndDate
+        });
+      } catch (error) {
+        console.error("Error extending project end date:", error);
+      }
+    }
+  };
 
   // Calculate timeline range
   const timelineStart = useMemo(() => {
-    if (currentProjectTasks.length === 0) return startOfDay(new Date());
-    const minDate = min(currentProjectTasks.map(t => parseISO(t.startDate)));
+    if (tasks.length === 0) return startOfDay(new Date());
+    const minDate = min(tasks.map(t => parseISO(t.startDate)));
     return min([minDate, startOfDay(new Date())]);
-  }, [currentProjectTasks]);
+  }, [tasks]);
 
   const timelineRange = useMemo(() => {
     const end = parseISO(projectEndDate);
@@ -210,57 +413,51 @@ export default function App() {
     return grouped;
   }, [timelineRange]);
 
-  const completedCount = currentProjectTasks.filter(t => t.status === 'completed').length;
-  const pendingCount = currentProjectTasks.length - completedCount;
-
-  const projects = [
-    { id: 'lokasi1', name: 'Proyek Lokasi 1' },
-    { id: 'lokasi2', name: 'Proyek Lokasi 2' }
-  ];
+  const completedCount = tasks.filter(t => t.status === 'completed').length;
+  const pendingCount = tasks.length - completedCount;
 
   return (
-    <div className="h-screen w-full bg-gray-50 text-gray-900 font-sans flex overflow-hidden">
+    <div className="h-screen w-full bg-gray-50 text-gray-900 font-sans flex flex-col overflow-hidden">
       
-      {/* Sidebar Dashboard */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col shrink-0 z-30 shadow-sm">
-        <div className="h-16 bg-[#107c41] flex items-center px-4 shrink-0">
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <Calendar className="w-6 h-6 text-green-100" />
-            Gantt Excel
-          </h1>
-        </div>
-        <div className="p-4">
-          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Daftar Proyek</h2>
-          <div className="flex flex-col gap-1">
-            {projects.map(project => (
-              <button
-                key={project.id}
-                onClick={() => setActiveProject(project.id)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
-                  activeProject === project.id 
-                    ? 'bg-[#e6f2eb] text-[#107c41]' 
-                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                }`}
-              >
-                <FolderKanban className={`w-4 h-4 ${activeProject === project.id ? 'text-[#107c41]' : 'text-gray-400'}`} />
-                {project.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      </aside>
-
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-4">
         
         {/* Header Section */}
-        <header className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
-          <div className="flex flex-col gap-2">
-            <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-              {projects.find(p => p.id === activeProject)?.name}
-            </h2>
-            <div className="flex items-center gap-2 mt-1">
-              <label htmlFor="projectEnd" className="text-sm font-semibold text-gray-600">
+        <header className="relative bg-gradient-to-br from-[#107c41] via-[#148f4d] to-[#0a522a] rounded-xl shadow-md border-b border-[#185c37] p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 text-white overflow-hidden">
+          {/* Watermark */}
+          <div className="absolute -right-10 -top-10 opacity-10 pointer-events-none">
+            <FolderKanban className="w-48 h-48" />
+          </div>
+          
+          <div className="relative z-10 flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+                <Calendar className="w-7 h-7 text-green-100" />
+                Renovki Action Plan
+              </h1>
+              <div className="h-6 w-px bg-white/30 mx-2 hidden md:block"></div>
+              <div className="flex items-center gap-2 bg-white/10 p-1.5 rounded-lg border border-white/20 print:hidden">
+                <MapPin className="w-4 h-4 text-green-100 ml-1" />
+                <select 
+                  value={currentLocationId}
+                  onChange={(e) => setCurrentLocationId(e.target.value)}
+                  className="bg-transparent border-none text-sm font-semibold text-white focus:ring-0 cursor-pointer outline-none [&>option]:text-gray-800"
+                >
+                  {locations.map(loc => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
+                <button 
+                  onClick={() => setIsLocationModalOpen(true)}
+                  className="p-1.5 bg-white/20 rounded-md shadow-sm hover:bg-white/30 text-white transition-colors"
+                  title="Tambah Lokasi Baru"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-1 print:hidden">
+              <label htmlFor="projectEnd" className="text-sm font-semibold text-green-50">
                 Batas Akhir Proyek (Scroll):
               </label>
               <input
@@ -268,19 +465,20 @@ export default function App() {
                 type="date"
                 value={projectEndDate}
                 onChange={(e) => setProjectEndDate(e.target.value)}
-                className="px-2 py-1 text-sm rounded border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] bg-gray-50 text-gray-900 font-medium"
+                className="px-2 py-1 text-sm rounded border border-[#185c37] focus:outline-none focus:ring-2 focus:ring-white bg-[#0c5e31] text-white font-medium color-scheme-dark"
+                style={{ colorScheme: 'dark' }}
               />
               <button 
                 onClick={extendProjectEndDate}
-                className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium transition-colors border border-gray-200"
+                className="px-2 py-1 text-xs bg-white/10 text-white rounded hover:bg-white/20 font-medium transition-colors border border-white/20"
                 title="Tambah 30 hari ke batas scroll"
               >
                 + 30 Hari
               </button>
-              <div className="w-px h-4 bg-gray-300 mx-1"></div>
+              <div className="w-px h-4 bg-white/30 mx-1"></div>
               <button 
                 onClick={toggleDayFormat}
-                className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium transition-colors flex items-center gap-1 border border-gray-200"
+                className="px-2 py-1 text-xs bg-white/10 text-white rounded hover:bg-white/20 font-medium transition-colors flex items-center gap-1 border border-white/20"
                 title="Ubah format nama hari"
               >
                 Hari: {formatLabel}
@@ -288,111 +486,186 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex gap-3">
-            <div className="bg-gray-50 px-4 py-2 rounded-lg border border-gray-200 flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-gray-800">{currentProjectTasks.length}</span>
-              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Total</span>
+          <div className="relative z-10 flex gap-3 items-center">
+            {user ? (
+              <button 
+                onClick={logOut} 
+                className="print:hidden p-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-colors text-white flex items-center gap-2 text-sm font-semibold border border-red-500/30 shadow-sm h-[52px]"
+                title="Keluar"
+              >
+                <LogOut className="w-5 h-5" />
+                <span className="hidden sm:inline">Keluar</span>
+              </button>
+            ) : (
+              <button 
+                onClick={signInWithGoogle} 
+                className="print:hidden p-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors text-white flex items-center gap-2 text-sm font-semibold border border-white/30 shadow-sm h-[52px]"
+                title="Masuk untuk Edit"
+              >
+                <LogIn className="w-5 h-5" />
+                <span className="hidden sm:inline">Masuk</span>
+              </button>
+            )}
+            <button 
+              onClick={() => window.print()} 
+              className="print:hidden p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-white flex items-center gap-2 text-sm font-semibold border border-white/20 shadow-sm mr-2 h-[52px]"
+              title="Cetak ke PDF"
+            >
+              <Printer className="w-5 h-5" />
+              <span className="hidden sm:inline">Cetak PDF</span>
+            </button>
+            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-white">{tasks.length}</span>
+              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Total</span>
             </div>
-            <div className="bg-[#e6f2eb] px-4 py-2 rounded-lg border border-[#cce4d6] flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-[#107c41]">{completedCount}</span>
-              <span className="text-[10px] font-bold text-[#107c41] uppercase tracking-wider">Selesai</span>
+            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-white">{completedCount}</span>
+              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Selesai</span>
             </div>
-            <div className="bg-amber-50 px-4 py-2 rounded-lg border border-amber-100 flex flex-col items-center min-w-[90px]">
-              <span className="text-xl font-bold text-amber-600">{pendingCount}</span>
-              <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Tertunda</span>
+            <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 flex flex-col items-center min-w-[90px]">
+              <span className="text-xl font-bold text-white">{pendingCount}</span>
+              <span className="text-[10px] font-bold text-green-100 uppercase tracking-wider">Tertunda</span>
             </div>
           </div>
         </header>
 
-        {/* Add Task Form */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 shrink-0">
-          <form onSubmit={handleAddTask} className="flex flex-col md:flex-row gap-3 items-end">
-            <div className="flex-1 w-full">
-              <label htmlFor="taskName" className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Nama Pekerjaan</label>
-              <input
-                id="taskName"
-                type="text"
-                value={newTaskName}
-                onChange={(e) => setNewTaskName(e.target.value)}
-                placeholder="misal: Pekerjaan Pondasi"
-                className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-[#107c41] bg-white"
-                required
-              />
+        {/* Forms Section */}
+        <div className="flex flex-col xl:flex-row gap-4 shrink-0 print:hidden">
+          {/* Add Task Form */}
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex-1">
+            <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2"><Plus className="w-4 h-4"/> Tambah Pekerjaan</h3>
+            <form onSubmit={handleAddTask} className="flex flex-col md:flex-row gap-3 items-end">
+              <div className="flex-1 w-full">
+                <label htmlFor="taskName" className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Nama Pekerjaan</label>
+                <input
+                  id="taskName"
+                  type="text"
+                  value={newTaskName}
+                  onChange={(e) => setNewTaskName(e.target.value)}
+                  placeholder="misal: Pekerjaan Pondasi"
+                  className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-[#107c41] bg-white"
+                  required
+                />
+              </div>
+              <div className="w-full md:w-32">
+                <label htmlFor="duration" className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Durasi (Hari)</label>
+                <input
+                  id="duration"
+                  type="number"
+                  min="1"
+                  value={newTaskDuration}
+                  onChange={(e) => setNewTaskDuration(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-[#107c41] bg-white"
+                  required
+                />
+              </div>
+              <div className="w-full md:w-40 flex flex-col">
+                <label htmlFor="workerId" className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Tukang</label>
+                <div className="flex gap-2">
+                  <select
+                    id="workerId"
+                    value={newTaskWorkerId}
+                    onChange={(e) => setNewTaskWorkerId(e.target.value)}
+                    className="flex-1 px-3 py-2 text-sm rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-[#107c41] bg-white"
+                  >
+                    <option value="">-- Pilih --</option>
+                    {workers.map(w => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setIsWorkerModalOpen(true)}
+                    className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md border border-gray-300 transition-colors shrink-0"
+                    title="Tambah Tukang Baru"
+                  >
+                    <UserPlus className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="w-full md:w-auto px-5 py-2 bg-[#107c41] hover:bg-[#185c37] text-white text-sm font-semibold rounded-md shadow-sm transition-colors flex items-center justify-center gap-2 h-[38px]"
+              >
+                Tambah
+              </button>
+            </form>
+          </section>
+
+          {/* Workers List Display */}
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 w-full xl:w-1/4">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-bold text-gray-700 flex items-center gap-2"><UserPlus className="w-4 h-4"/> Daftar Tukang</h3>
+              <button 
+                onClick={() => setIsWorkerModalOpen(true)}
+                className="text-xs font-semibold text-[#107c41] hover:underline"
+              >
+                + Tambah
+              </button>
             </div>
-            <div className="w-full md:w-32">
-              <label htmlFor="duration" className="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Durasi (Hari)</label>
-              <input
-                id="duration"
-                type="number"
-                min="1"
-                value={newTaskDuration}
-                onChange={(e) => setNewTaskDuration(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-[#107c41] bg-white"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full md:w-auto px-5 py-2 bg-[#107c41] hover:bg-[#185c37] text-white text-sm font-semibold rounded-md shadow-sm transition-colors flex items-center justify-center gap-2 h-[38px]"
-            >
-              <Plus className="w-4 h-4" /> Tambah Pekerjaan
-            </button>
-          </form>
-        </section>
+            {workers.length > 0 ? (
+              <div className="flex flex-wrap gap-2 max-h-[80px] overflow-y-auto custom-scrollbar pr-1">
+                {workers.map(w => (
+                  <span 
+                    key={w.id} 
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('workerId', w.id);
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
+                    className="text-xs px-2 py-1 rounded-full border flex items-center gap-1.5 font-medium cursor-grab active:cursor-grabbing group/worker" 
+                    style={{ borderColor: w.color, backgroundColor: `${w.color}15`, color: '#374151' }}
+                    title="Tarik ke pekerjaan untuk menugaskan"
+                  >
+                    <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: w.color }}></div>
+                    {w.name}
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteWorker(w.id);
+                      }}
+                      className="ml-1 text-gray-400 hover:text-red-500 opacity-0 group-hover/worker:opacity-100 transition-opacity"
+                      title="Hapus Tukang"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400 italic">Belum ada tukang terdaftar</p>
+            )}
+          </section>
+        </div>
 
         {/* Gantt Chart Area */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px]">
-          <div className="flex flex-1 overflow-hidden">
-            
-            {/* Left Pane: Task List */}
-            <div className="w-80 flex-shrink-0 border-r border-gray-300 flex flex-col bg-white z-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] relative">
-              {/* Header */}
-              <div className="h-16 border-b border-gray-300 bg-[#f3f2f1] flex items-center px-4 font-semibold text-gray-700 text-sm shrink-0">
-                <div className="w-8"></div>
-                <div className="flex-1">Daftar Pekerjaan</div>
-                <div className="w-8 text-center"></div>
-              </div>
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px] relative">
+          
+          {/* Single Scrollable Container */}
+          <div className="flex-1 overflow-auto custom-scrollbar flex flex-col relative bg-white">
+            <div className="w-max min-w-full flex flex-col min-h-full">
               
-              {/* Task Rows */}
-              <div className="overflow-y-auto flex-1 custom-scrollbar">
-                {currentProjectTasks.length === 0 ? (
-                  <div className="p-4 text-sm text-gray-400 text-center mt-10">Belum ada pekerjaan yang ditambahkan.</div>
-                ) : (
-                  currentProjectTasks.map(task => (
-                    <div key={task.id} className="h-12 border-b border-gray-100 flex items-center px-4 hover:bg-gray-50 transition-colors group">
-                      <button 
-                        onClick={() => toggleTaskStatus(task.id)}
-                        className="w-8 focus:outline-none text-gray-400 hover:text-[#107c41]"
-                      >
-                        {task.status === 'completed' ? (
-                          <CheckCircle2 className="w-5 h-5 text-[#107c41]" />
-                        ) : (
-                          <Circle className="w-5 h-5" />
-                        )}
-                      </button>
-                      <div className="flex-1 truncate pr-2">
-                        <span className={`text-sm font-medium ${task.status === 'completed' ? 'line-through text-gray-400' : 'text-gray-800'}`}>
-                          {task.name}
-                        </span>
-                      </div>
-                      <button 
-                        onClick={() => deleteTask(task.id)}
-                        className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all"
-                        title="Hapus Pekerjaan"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+              {/* Header Row (Sticky Top) */}
+              <div className="flex sticky top-0 z-40 bg-white shadow-sm h-16">
+                
+                {/* Left Header (Sticky Left & Top) */}
+                <div 
+                  className="flex-shrink-0 border-r border-b border-gray-300 bg-[#f3f2f1] flex items-center px-4 font-semibold text-gray-700 text-sm sticky left-0 z-50"
+                  style={{ width: leftPaneWidth }}
+                >
+                  <div className="flex-1 truncate">Daftar Pekerjaan</div>
+                  {/* Resizer Handle */}
+                  <div 
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      setPaneDrag({ startX: e.clientX, startWidth: leftPaneWidth });
+                    }}
+                  />
+                </div>
 
-            {/* Right Pane: Timeline */}
-            <div className="flex-1 overflow-x-auto overflow-y-hidden flex flex-col custom-scrollbar relative bg-white">
-              <div className="flex flex-col h-full w-max min-w-full">
-                {/* Timeline Header */}
-                <div className="flex flex-col shrink-0 sticky top-0 z-10 bg-white shadow-sm h-16">
+                {/* Right Header (Sticky Top) */}
+                <div className="flex flex-col flex-1">
                   {/* Months Row */}
                   <div className="flex border-b border-gray-300 bg-[#f3f2f1] h-6 items-center">
                     {months.map((m, i) => (
@@ -427,72 +700,190 @@ export default function App() {
                     })}
                   </div>
                 </div>
+              </div>
 
-                {/* Timeline Grid & Bars */}
-                <div className="flex-1 overflow-y-auto relative custom-scrollbar">
-                  {/* Background Grid */}
-                  <div className="absolute inset-0 flex pointer-events-none">
-                    {timelineRange.map((day, i) => {
-                      const isSunday = day.getDay() === 0;
-                      const isToday = isSameDay(day, new Date());
-                      return (
-                        <div 
-                          key={`grid-${i}`} 
-                          className={`flex-shrink-0 border-r border-gray-100 h-full ${isSunday ? 'bg-gray-50/50' : isToday ? 'bg-[#e6f2eb]/50' : ''}`}
-                          style={{ width: CELL_WIDTH }}
-                        >
-                          {isSunday && (
-                            <div className="w-full h-full flex items-center justify-center opacity-30">
-                              <div className="w-px h-full bg-gray-300 border-l border-dashed border-gray-400"></div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                {/* Task Bars */}
-                <div className="relative">
-                  {currentProjectTasks.map((task) => {
-                    const isDragging = dragState?.taskId === task.id && dragState.type === 'move';
-                    const isResizing = dragState?.taskId === task.id && dragState.type === 'resize';
-                    const deltaDays = (isDragging || isResizing) ? dragState.deltaDays : 0;
-                    
-                    let taskStart = parseISO(task.startDate);
-                    let taskEnd = parseISO(task.deadline);
-                    
-                    if (isDragging) {
-                      taskStart = addDays(taskStart, deltaDays);
-                      if (taskStart.getDay() === 0) taskStart = addDays(taskStart, 1);
-                      taskEnd = addWorkingDays(taskStart, task.duration);
-                    } else if (isResizing) {
-                      let tempEnd = addDays(taskEnd, deltaDays);
-                      if (isBefore(tempEnd, taskStart)) tempEnd = taskStart;
-                      const tempDuration = getWorkingDaysCount(taskStart, tempEnd);
-                      taskEnd = addWorkingDays(taskStart, Math.max(1, tempDuration));
-                    }
-                    
-                    // Prevent visual resizing past start date
-                    const safeTaskEnd = isBefore(taskEnd, taskStart) ? taskStart : taskEnd;
-                    
-                    const startIndex = differenceInDays(taskStart, timelineStart);
-                    const leftOffset = startIndex * CELL_WIDTH;
-                    
-                    const durationDays = differenceInDays(safeTaskEnd, taskStart) + 1;
-                    const width = durationDays * CELL_WIDTH;
-
-                    const isCompleted = task.status === 'completed';
-                    const isOverdue = isBefore(safeTaskEnd, startOfDay(new Date())) && !isCompleted;
-
-                    let barColor = 'bg-[#107c41] border-[#185c37] text-white';
-                    if (isCompleted) barColor = 'bg-[#107c41]/40 border-[#107c41]/50 text-white/90';
-                    else if (isOverdue) barColor = 'bg-red-500 border-red-600 text-white';
-
+              {/* Body Rows */}
+              <div className="flex flex-col relative flex-1">
+                
+                {/* Background Grid */}
+                <div className="absolute top-0 bottom-0 flex pointer-events-none z-0" style={{ left: leftPaneWidth }}>
+                  {timelineRange.map((day, i) => {
+                    const isSunday = day.getDay() === 0;
+                    const isToday = isSameDay(day, new Date());
                     return (
                       <div 
-                        key={`bar-${task.id}`} 
-                        className="h-12 border-b border-gray-100/50 relative flex items-center"
+                        key={`grid-${i}`} 
+                        className={`flex-shrink-0 border-r border-gray-100 h-full ${isSunday ? 'bg-gray-50/50' : isToday ? 'bg-[#e6f2eb]/50' : ''}`}
+                        style={{ width: CELL_WIDTH }}
                       >
+                        {isSunday && (
+                          <div className="w-full h-full flex items-center justify-center opacity-30">
+                            <div className="w-px h-full bg-gray-300 border-l border-dashed border-gray-400"></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Empty State */}
+                {tasks.length === 0 && (
+                  <div className="flex h-32 items-center justify-center sticky left-0 w-full z-10">
+                    <div className="text-sm text-gray-400">Belum ada pekerjaan yang ditambahkan.</div>
+                  </div>
+                )}
+
+                {/* Task Rows */}
+                {tasks.map((task) => {
+                  const isDragging = dragState?.taskId === task.id && dragState.type === 'move';
+                  const isResizing = dragState?.taskId === task.id && dragState.type === 'resize';
+                  const deltaDays = (isDragging || isResizing) ? dragState.deltaDays : 0;
+                  
+                  let taskStart = parseISO(task.startDate);
+                  let taskEnd = parseISO(task.deadline);
+                  
+                  if (isDragging) {
+                    taskStart = addDays(taskStart, deltaDays);
+                    if (taskStart.getDay() === 0) taskStart = addDays(taskStart, 1);
+                    taskEnd = addWorkingDays(taskStart, task.duration || 1);
+                  } else if (isResizing) {
+                    let tempEnd = addDays(taskEnd, deltaDays);
+                    if (isBefore(tempEnd, taskStart)) tempEnd = taskStart;
+                    const tempDuration = getWorkingDaysCount(taskStart, tempEnd);
+                    taskEnd = addWorkingDays(taskStart, Math.max(1, tempDuration));
+                  }
+                  
+                  const safeTaskEnd = isBefore(taskEnd, taskStart) ? taskStart : taskEnd;
+                  const startIndex = differenceInDays(taskStart, timelineStart);
+                  const leftOffset = startIndex * CELL_WIDTH;
+                  const durationDays = differenceInDays(safeTaskEnd, taskStart) + 1;
+                  const width = durationDays * CELL_WIDTH;
+
+                  const isCompleted = task.status === 'completed';
+                  const isOverdue = isBefore(safeTaskEnd, startOfDay(new Date())) && !isCompleted;
+
+                  const worker = workers.find(w => w.id === task.workerId);
+
+                  let barColorClass = 'text-white';
+                  let barStyle: React.CSSProperties = {
+                    left: `${leftOffset + 4}px`, 
+                    width: `${width - 8}px`,
+                    minWidth: '24px',
+                    touchAction: 'none',
+                    transitionProperty: (isDragging || isResizing) ? 'none' : 'left, width, background-color',
+                    transitionDuration: '200ms'
+                  };
+
+                  if (isCompleted) {
+                    barColorClass += ' bg-[#107c41]/40 border-[#107c41]/50 text-white/90';
+                  } else if (isOverdue) {
+                    barColorClass += ' bg-red-500 border-red-600';
+                  } else if (worker) {
+                    barStyle.backgroundColor = worker.color;
+                    barStyle.borderColor = worker.color;
+                  } else {
+                    barColorClass += ' bg-[#107c41] border-[#185c37]';
+                  }
+
+                  return (
+                    <div 
+                      key={task.id} 
+                      className="flex h-12 border-b border-gray-200 group hover:bg-gray-50/50 transition-colors z-10"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move'; // Allow both copy and move
+                      }}
+                      onDrop={async (e) => {
+                        e.preventDefault();
+                        if (!user) return alert("Silakan masuk untuk mengedit");
+                        
+                        const droppedWorkerId = e.dataTransfer.getData('workerId');
+                        const reorderTaskId = e.dataTransfer.getData('reorderTaskId');
+                        
+                        if (droppedWorkerId) {
+                          try {
+                            await updateDoc(doc(db, 'tasks', task.id), { workerId: droppedWorkerId });
+                          } catch (error) {
+                            console.error("Error updating task worker:", error);
+                          }
+                        } else if (reorderTaskId && reorderTaskId !== task.id) {
+                          const draggedIndex = tasks.findIndex(t => t.id === reorderTaskId);
+                          const targetIndex = tasks.findIndex(t => t.id === task.id);
+                          if (draggedIndex !== -1 && targetIndex !== -1) {
+                            // Simple reorder by swapping createdAt
+                            const draggedTask = tasks[draggedIndex];
+                            const targetTask = tasks[targetIndex];
+                            try {
+                              const batch = writeBatch(db);
+                              batch.update(doc(db, 'tasks', draggedTask.id), { createdAt: targetTask.createdAt });
+                              batch.update(doc(db, 'tasks', targetTask.id), { createdAt: draggedTask.createdAt });
+                              await batch.commit();
+                            } catch (error) {
+                              console.error("Error reordering tasks:", error);
+                            }
+                          }
+                        }
+                      }}
+                    >
+                      
+                      {/* Left Cell (Sticky Left) */}
+                      <div 
+                        className="flex-shrink-0 sticky left-0 z-20 bg-white group-hover:bg-gray-50 border-r border-gray-200 flex items-center px-2 transition-colors"
+                        style={{ width: leftPaneWidth }}
+                      >
+                        <div 
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('reorderTaskId', task.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          className="cursor-grab active:cursor-grabbing p-1 text-gray-300 hover:text-gray-500 mr-1 shrink-0"
+                          title="Tarik untuk memindah urutan"
+                        >
+                          <GripVertical className="w-4 h-4" />
+                        </div>
+                        <button 
+                          onClick={() => toggleTaskStatus(task.id)}
+                          className="w-8 focus:outline-none text-gray-400 hover:text-[#107c41] shrink-0"
+                        >
+                          {task.status === 'completed' ? (
+                            <CheckCircle2 className="w-5 h-5 text-[#107c41]" />
+                          ) : (
+                            <Circle className="w-5 h-5" />
+                          )}
+                        </button>
+                        <div className="flex-1 truncate pr-2 flex items-center gap-2">
+                          <span className={`text-sm font-medium ${task.status === 'completed' ? 'line-through text-gray-400' : 'text-gray-800'} truncate`}>
+                            {task.name}
+                          </span>
+                          {worker && (
+                            <div 
+                              className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0" 
+                              style={{ backgroundColor: worker.color }}
+                              title={`Tukang: ${worker.name}`}
+                            />
+                          )}
+                        </div>
+                        <button 
+                          onClick={() => deleteTask(task.id)}
+                          className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                          title="Hapus Pekerjaan"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        
+                        {/* Resizer Handle for Row */}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50 opacity-0 group-hover:opacity-100"
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            setPaneDrag({ startX: e.clientX, startWidth: leftPaneWidth });
+                          }}
+                        />
+                      </div>
+
+                      {/* Right Cell (Task Bar Container) */}
+                      <div className="flex-1 relative flex items-center">
                         <div 
                           onPointerDown={(e) => {
                             e.preventDefault();
@@ -505,15 +896,8 @@ export default function App() {
                               type: 'move'
                             });
                           }}
-                          className={`absolute h-7 rounded-sm border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColor} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110 ring-2 ring-[#107c41]' : 'z-10'}`}
-                          style={{ 
-                            left: `${leftOffset + 4}px`, 
-                            width: `${width - 8}px`,
-                            minWidth: '24px',
-                            touchAction: 'none',
-                            transitionProperty: (isDragging || isResizing) ? 'none' : 'left, width',
-                            transitionDuration: '200ms'
-                          }}
+                          className={`absolute h-7 rounded-sm border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColorClass} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110 ring-2 ring-[#107c41]' : 'z-10'}`}
+                          style={barStyle}
                           title={`${task.name} (${format(taskStart, 'd MMM yyyy', { locale: localeId })} - ${format(safeTaskEnd, 'd MMM yyyy', { locale: localeId })})`}
                         >
                           {width > 60 && (
@@ -536,25 +920,140 @@ export default function App() {
                                 type: 'resize'
                               });
                             }}
-                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize hover:bg-black/20 flex items-center justify-center rounded-r-md transition-colors"
-                            title="Tarik untuk mengubah durasi"
+                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center rounded-r-md transition-colors border-l border-white/20 hover:brightness-110"
+                            style={{ backgroundColor: worker ? worker.color : 'rgba(0,0,0,0.2)' }}
+                            title={worker ? `Tukang: ${worker.name} - Tarik untuk mengubah durasi` : "Tarik untuk mengubah durasi"}
                           >
                             <div className="w-1 h-3 bg-white/70 rounded-full pointer-events-none" />
                           </div>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-            
           </div>
         </section>
       </main>
       
-      {/* Custom Scrollbar Styles */}
+      {/* Worker Modal */}
+      {isWorkerModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="bg-[#107c41] p-4 flex justify-between items-center text-white">
+              <h3 className="font-bold flex items-center gap-2">
+                <UserPlus className="w-5 h-5" />
+                Tambah Tukang Baru
+              </h3>
+              <button 
+                onClick={() => setIsWorkerModalOpen(false)}
+                className="p-1 hover:bg-white/20 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <form onSubmit={handleAddWorker} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Tukang</label>
+                  <input
+                    type="text"
+                    value={newWorkerName}
+                    onChange={(e) => setNewWorkerName(e.target.value)}
+                    placeholder="Masukkan nama tukang..."
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all"
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Warna Identitas</label>
+                  <div className="flex gap-3 items-center">
+                    <input
+                      type="color"
+                      value={newWorkerColor}
+                      onChange={(e) => setNewWorkerColor(e.target.value)}
+                      className="w-16 h-16 p-1 rounded-xl border border-gray-200 cursor-pointer bg-white"
+                    />
+                    <div className="flex-1 text-sm text-gray-500">
+                      Warna ini akan muncul di ujung bar pekerjaan sebagai penanda tukang tersebut.
+                    </div>
+                  </div>
+                </div>
+                <div className="pt-4 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsWorkerModalOpen(false)}
+                    className="flex-1 px-4 py-3 border border-gray-200 text-gray-600 font-bold rounded-xl hover:bg-gray-50 transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95"
+                  >
+                    Simpan Tukang
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Location Modal */}
+      {isLocationModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="bg-[#107c41] p-4 flex justify-between items-center text-white">
+              <h3 className="font-bold flex items-center gap-2">
+                <MapPin className="w-5 h-5" />
+                Tambah Lokasi Baru
+              </h3>
+              <button 
+                onClick={() => setIsLocationModalOpen(false)}
+                className="p-1 hover:bg-white/20 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <form onSubmit={handleAddLocation} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Lokasi / Proyek</label>
+                  <input
+                    type="text"
+                    value={newLocationName}
+                    onChange={(e) => setNewLocationName(e.target.value)}
+                    placeholder="Masukkan nama lokasi..."
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all"
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div className="pt-4 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsLocationModalOpen(false)}
+                    className="flex-1 px-4 py-3 border border-gray-200 text-gray-600 font-bold rounded-xl hover:bg-gray-50 transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95"
+                  >
+                    Simpan Lokasi
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Scrollbar and Print Styles */}
       <style dangerouslySetInnerHTML={{__html: `
         .custom-scrollbar::-webkit-scrollbar {
           width: 8px;
@@ -570,6 +1069,42 @@ export default function App() {
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
           background: #34d399; 
+        }
+
+        @media print {
+          body, html {
+            background: white !important;
+            height: auto !important;
+            overflow: visible !important;
+          }
+          #root {
+            height: auto !important;
+            overflow: visible !important;
+          }
+          .h-screen {
+            height: auto !important;
+          }
+          .overflow-hidden {
+            overflow: visible !important;
+          }
+          .custom-scrollbar {
+            overflow: visible !important;
+          }
+          ::-webkit-scrollbar {
+            display: none !important;
+          }
+          .print\\:hidden {
+            display: none !important;
+          }
+          /* Ensure Gantt chart extends for printing */
+          .min-h-\\[400px\\] {
+            min-height: auto !important;
+          }
+          /* Make background colors print */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
         }
       `}} />
     </div>
