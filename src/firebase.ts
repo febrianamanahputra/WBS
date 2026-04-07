@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -13,6 +13,7 @@ export const signInWithGoogle = async () => {
     await signInWithPopup(auth, provider);
   } catch (error) {
     console.error("Error signing in with Google", error);
+    throw error;
   }
 };
 
@@ -23,3 +24,5 @@ export const logOut = async () => {
     console.error("Error signing out", error);
   }
 };
+
+export { RecaptchaVerifier, signInWithPhoneNumber };
