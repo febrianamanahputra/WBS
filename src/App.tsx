@@ -3,7 +3,7 @@ import { format, differenceInDays, isBefore, startOfDay, parseISO, eachDayOfInte
 import { id as localeId } from 'date-fns/locale';
 import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban, UserPlus, X, GripVertical, MapPin, Printer, LogIn, LogOut } from 'lucide-react';
 import { Task, Worker, Location } from './types';
-import { db, auth, signInWithGoogle, logOut, RecaptchaVerifier, signInWithPhoneNumber } from './firebase';
+import { db, auth, signInWithGoogle, logOut, RecaptchaVerifier, signInWithPhoneNumber, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './firebase';
 import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query, where, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
@@ -56,6 +56,14 @@ export default function App() {
   
   // Login Modal State
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
+  
+  // Email Auth State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+
+  // Phone Auth State
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [confirmationResult, setConfirmationResult] = useState<any>(null);
@@ -158,6 +166,33 @@ export default function App() {
     } catch (error: any) {
       console.error("Error verifying OTP:", error);
       setAuthError("Kode OTP salah atau kadaluarsa.");
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    if (!email || !password) return;
+    try {
+      if (isSignUp) {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+      setIsLoginModalOpen(false);
+      setEmail('');
+      setPassword('');
+    } catch (error: any) {
+      console.error("Email auth error:", error);
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        setAuthError("Email atau password salah.");
+      } else if (error.code === 'auth/email-already-in-use') {
+        setAuthError("Email sudah terdaftar. Silakan masuk.");
+      } else if (error.code === 'auth/weak-password') {
+        setAuthError("Password terlalu lemah, minimal 6 karakter.");
+      } else {
+        setAuthError(error.message || "Gagal masuk dengan email.");
+      }
     }
   };
 
@@ -1201,66 +1236,129 @@ export default function App() {
                   <div className="w-full border-t border-gray-200"></div>
                 </div>
                 <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">Atau dengan Nomor HP</span>
+                  <span className="px-2 bg-white text-gray-500">Atau masuk dengan</span>
                 </div>
               </div>
 
-              {/* Phone Login */}
-              {!confirmationResult ? (
-                <form onSubmit={handleSendOtp} className="space-y-4">
+              {/* Tabs */}
+              <div className="flex p-1 bg-gray-100 rounded-lg">
+                <button
+                  onClick={() => { setAuthMethod('email'); setAuthError(null); }}
+                  className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${authMethod === 'email' ? 'bg-white text-[#107c41] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Email
+                </button>
+                <button
+                  onClick={() => { setAuthMethod('phone'); setAuthError(null); }}
+                  className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${authMethod === 'phone' ? 'bg-white text-[#107c41] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Nomor HP
+                </button>
+              </div>
+
+              {/* Email Login */}
+              {authMethod === 'email' && (
+                <form onSubmit={handleEmailAuth} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nomor Handphone</label>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Email</label>
                     <input
-                      type="tel"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      placeholder="Contoh: 08123456789"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="nama@email.com"
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all"
                       required
                     />
                   </div>
-                  <div id="recaptcha-container"></div>
-                  <button
-                    type="submit"
-                    disabled={isSendingOtp || !phoneNumber}
-                    className="w-full px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isSendingOtp ? 'Mengirim...' : 'Kirim Kode OTP'}
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyOtp} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Kode OTP</label>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Password</label>
                     <input
-                      type="text"
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value)}
-                      placeholder="Masukkan 6 digit kode"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all text-center tracking-widest text-lg"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Minimal 6 karakter"
+                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all"
                       required
-                      maxLength={6}
-                      autoFocus
+                      minLength={6}
                     />
                   </div>
                   <button
                     type="submit"
-                    disabled={!otp || otp.length < 6}
+                    disabled={!email || !password}
                     className="w-full px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Verifikasi & Masuk
+                    {isSignUp ? 'Daftar' : 'Masuk'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirmationResult(null);
-                      setOtp('');
-                    }}
-                    className="w-full px-4 py-2 text-sm text-gray-500 hover:text-gray-700 font-medium"
-                  >
-                    Ganti Nomor HP
-                  </button>
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => { setIsSignUp(!isSignUp); setAuthError(null); }}
+                      className="text-sm text-[#107c41] hover:underline font-medium"
+                    >
+                      {isSignUp ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'}
+                    </button>
+                  </div>
                 </form>
+              )}
+
+              {/* Phone Login */}
+              {authMethod === 'phone' && (
+                !confirmationResult ? (
+                  <form onSubmit={handleSendOtp} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nomor Handphone</label>
+                      <input
+                        type="tel"
+                        value={phoneNumber}
+                        onChange={(e) => setPhoneNumber(e.target.value)}
+                        placeholder="Contoh: 08123456789"
+                        className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all"
+                        required
+                      />
+                    </div>
+                    <div id="recaptcha-container"></div>
+                    <button
+                      type="submit"
+                      disabled={isSendingOtp || !phoneNumber}
+                      className="w-full px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isSendingOtp ? 'Mengirim...' : 'Kirim Kode OTP'}
+                    </button>
+                  </form>
+                ) : (
+                  <form onSubmit={handleVerifyOtp} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Kode OTP</label>
+                      <input
+                        type="text"
+                        value={otp}
+                        onChange={(e) => setOtp(e.target.value)}
+                        placeholder="Masukkan 6 digit kode"
+                        className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#107c41] focus:border-transparent transition-all text-center tracking-widest text-lg"
+                        required
+                        maxLength={6}
+                        autoFocus
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={!otp || otp.length < 6}
+                      className="w-full px-4 py-3 bg-[#107c41] text-white font-bold rounded-xl hover:bg-[#185c37] shadow-lg shadow-green-900/20 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Verifikasi & Masuk
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmationResult(null);
+                        setOtp('');
+                      }}
+                      className="w-full px-4 py-2 text-sm text-gray-500 hover:text-gray-700 font-medium"
+                    >
+                      Ganti Nomor HP
+                    </button>
+                  </form>
+                )
               )}
             </div>
           </div>
