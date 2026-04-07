@@ -3,8 +3,15 @@ import { format, differenceInDays, isBefore, startOfDay, parseISO, eachDayOfInte
 import { id as localeId } from 'date-fns/locale';
 import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban, UserPlus, X, GripVertical, MapPin, Printer } from 'lucide-react';
 import { Task, Worker, Location } from './types';
-import { db } from './firebase';
-import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query, where, writeBatch } from 'firebase/firestore';
+
+const loadData = <T,>(key: string, defaultValue: T): T => {
+  const data = localStorage.getItem(key);
+  return data ? JSON.parse(data) : defaultValue;
+};
+
+const saveData = <T,>(key: string, data: T) => {
+  localStorage.setItem(key, JSON.stringify(data));
+};
 
 const CELL_WIDTH = 40; // width of each day cell in pixels
 
@@ -90,31 +97,27 @@ export default function App() {
   const [paneDrag, setPaneDrag] = useState<{ startX: number; startWidth: number } | null>(null);
   const [leftPaneWidth, setLeftPaneWidth] = useState(320);
 
-  // Load locations from Firebase
+  // Load locations from Local Storage
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'locations'), (snapshot) => {
-      const loadedLocations: Location[] = [];
-      snapshot.forEach((doc) => {
-        loadedLocations.push({ id: doc.id, ...doc.data() } as Location);
-      });
-      
-      if (loadedLocations.length > 0) {
-        setLocations(loadedLocations);
-        if (!currentLocationId || !loadedLocations.find(l => l.id === currentLocationId)) {
-          setCurrentLocationId(loadedLocations[0].id);
-        }
-      } else {
-        // Create default location if none exists
-        const defaultLoc = { name: 'Proyek Utama', projectEndDate: format(addMonths(new Date(), 1), 'yyyy-MM-dd') };
-        setDoc(doc(collection(db, 'locations')), defaultLoc);
+    const loadedLocations = loadData<Location[]>('gantt_locations', []);
+    
+    if (loadedLocations.length > 0) {
+      setLocations(loadedLocations);
+      if (!currentLocationId || !loadedLocations.find(l => l.id === currentLocationId)) {
+        setCurrentLocationId(loadedLocations[0].id);
       }
-      setIsInitialLoad(false);
-    }, (error) => {
-      console.error("Error fetching locations:", error);
-      setIsInitialLoad(false);
-    });
-
-    return () => unsubscribe();
+    } else {
+      // Create default location if none exists
+      const defaultLoc: Location = { 
+        id: crypto.randomUUID(), 
+        name: 'Proyek Utama', 
+        projectEndDate: format(addMonths(new Date(), 1), 'yyyy-MM-dd') 
+      };
+      setLocations([defaultLoc]);
+      setCurrentLocationId(defaultLoc.id);
+      saveData('gantt_locations', [defaultLoc]);
+    }
+    setIsInitialLoad(false);
   }, []);
 
   // Load tasks, workers, and settings when location changes
@@ -127,31 +130,14 @@ export default function App() {
       setProjectEndDate(currentLoc.projectEndDate);
     }
 
-    const tasksQuery = query(collection(db, 'tasks'), where('locationId', '==', currentLocationId));
-    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
-      const loadedTasks: Task[] = [];
-      snapshot.forEach((doc) => {
-        loadedTasks.push({ id: doc.id, ...doc.data() } as Task);
-      });
-      // Sort tasks by createdAt or a specific order field if we had one.
-      // For now, we'll just sort by createdAt to keep it stable, or let the user reorder.
-      loadedTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      setTasks(loadedTasks);
-    });
+    const allTasks = loadData<Task[]>('gantt_tasks', []);
+    const locationTasks = allTasks.filter(t => t.locationId === currentLocationId);
+    locationTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    setTasks(locationTasks);
 
-    const workersQuery = query(collection(db, 'workers'), where('locationId', '==', currentLocationId));
-    const unsubscribeWorkers = onSnapshot(workersQuery, (snapshot) => {
-      const loadedWorkers: Worker[] = [];
-      snapshot.forEach((doc) => {
-        loadedWorkers.push({ id: doc.id, ...doc.data() } as Worker);
-      });
-      setWorkers(loadedWorkers);
-    });
-
-    return () => {
-      unsubscribeTasks();
-      unsubscribeWorkers();
-    };
+    const allWorkers = loadData<Worker[]>('gantt_workers', []);
+    const locationWorkers = allWorkers.filter(w => w.locationId === currentLocationId);
+    setWorkers(locationWorkers);
   }, [currentLocationId, isInitialLoad, locations]);
 
   // Handle Pane Resizing
@@ -210,11 +196,14 @@ export default function App() {
           }
         }
         
-        updateDoc(doc(db, 'tasks', taskToUpdate.id), {
-          startDate: newStart.toISOString(),
-          deadline: newEnd.toISOString(),
-          duration: newDuration
-        }).catch(console.error);
+        const allTasks = loadData<Task[]>('gantt_tasks', []);
+        const updatedTasks = allTasks.map(t => 
+          t.id === taskToUpdate.id 
+            ? { ...t, startDate: newStart.toISOString(), deadline: newEnd.toISOString(), duration: newDuration }
+            : t
+        );
+        saveData('gantt_tasks', updatedTasks);
+        setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
       }
       setDragState(null);
     };
@@ -256,12 +245,11 @@ export default function App() {
       locationId: currentLocationId
     };
 
-    try {
-      await setDoc(doc(db, 'tasks', newTaskId), newTask);
-      setNewTaskName('');
-    } catch (error) {
-      console.error("Error adding task:", error);
-    }
+    const allTasks = loadData<Task[]>('gantt_tasks', []);
+    allTasks.push(newTask);
+    saveData('gantt_tasks', allTasks);
+    setTasks(prev => [...prev, newTask]);
+    setNewTaskName('');
   };
 
   const handleAddWorker = async (e: React.FormEvent) => {
@@ -276,27 +264,24 @@ export default function App() {
       locationId: currentLocationId
     };
     
-    try {
-      await setDoc(doc(db, 'workers', newWorkerId), newWorker);
-      setNewWorkerName('');
-      setIsWorkerModalOpen(false);
-    } catch (error) {
-      console.error("Error adding worker:", error);
-    }
+    const allWorkers = loadData<Worker[]>('gantt_workers', []);
+    allWorkers.push(newWorker);
+    saveData('gantt_workers', allWorkers);
+    setWorkers(prev => [...prev, newWorker]);
+    setNewWorkerName('');
+    setIsWorkerModalOpen(false);
   };
 
   const handleDeleteWorker = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'workers', id));
-      // Also remove worker from tasks
-      const batch = writeBatch(db);
-      tasks.filter(t => t.workerId === id).forEach(t => {
-        batch.update(doc(db, 'tasks', t.id), { workerId: null });
-      });
-      await batch.commit();
-    } catch (error) {
-      console.error("Error deleting worker:", error);
-    }
+    const allWorkers = loadData<Worker[]>('gantt_workers', []);
+    const updatedWorkers = allWorkers.filter(w => w.id !== id);
+    saveData('gantt_workers', updatedWorkers);
+    setWorkers(updatedWorkers.filter(w => w.locationId === currentLocationId));
+
+    const allTasks = loadData<Task[]>('gantt_tasks', []);
+    const updatedTasks = allTasks.map(t => t.workerId === id ? { ...t, workerId: undefined } : t);
+    saveData('gantt_tasks', updatedTasks);
+    setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
   };
 
   const handleAddLocation = async (e: React.FormEvent) => {
@@ -309,48 +294,44 @@ export default function App() {
       name: newLocationName.trim(),
     };
     
-    try {
-      await setDoc(doc(db, 'locations', newLocId), newLoc);
-      setCurrentLocationId(newLocId);
-      setNewLocationName('');
-      setIsLocationModalOpen(false);
-    } catch (error) {
-      console.error("Error adding location:", error);
-    }
+    const allLocations = loadData<Location[]>('gantt_locations', []);
+    allLocations.push(newLoc);
+    saveData('gantt_locations', allLocations);
+    setLocations(allLocations);
+    setCurrentLocationId(newLocId);
+    setNewLocationName('');
+    setIsLocationModalOpen(false);
   };
 
   const toggleTaskStatus = async (id: string) => {
     const task = tasks.find(t => t.id === id);
     if (task) {
-      try {
-        await updateDoc(doc(db, 'tasks', id), {
-          status: task.status === 'pending' ? 'completed' : 'pending'
-        });
-      } catch (error) {
-        console.error("Error toggling task status:", error);
-      }
+      const allTasks = loadData<Task[]>('gantt_tasks', []);
+      const updatedTasks = allTasks.map(t => 
+        t.id === id ? { ...t, status: t.status === 'pending' ? 'completed' : 'pending' } : t
+      );
+      saveData('gantt_tasks', updatedTasks);
+      setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
     }
   };
 
   const deleteTask = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'tasks', id));
-    } catch (error) {
-      console.error("Error deleting task:", error);
-    }
+    const allTasks = loadData<Task[]>('gantt_tasks', []);
+    const updatedTasks = allTasks.filter(t => t.id !== id);
+    saveData('gantt_tasks', updatedTasks);
+    setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
   };
 
   const extendProjectEndDate = async () => {
     const newEndDate = format(addDays(parseISO(projectEndDate), 30), 'yyyy-MM-dd');
     setProjectEndDate(newEndDate);
     if (currentLocationId) {
-      try {
-        await updateDoc(doc(db, 'locations', currentLocationId), {
-          projectEndDate: newEndDate
-        });
-      } catch (error) {
-        console.error("Error extending project end date:", error);
-      }
+      const allLocations = loadData<Location[]>('gantt_locations', []);
+      const updatedLocations = allLocations.map(l => 
+        l.id === currentLocationId ? { ...l, projectEndDate: newEndDate } : l
+      );
+      saveData('gantt_locations', updatedLocations);
+      setLocations(updatedLocations);
     }
   };
 
@@ -759,11 +740,12 @@ export default function App() {
                         const reorderTaskId = e.dataTransfer.getData('reorderTaskId');
                         
                         if (droppedWorkerId) {
-                          try {
-                            await updateDoc(doc(db, 'tasks', task.id), { workerId: droppedWorkerId });
-                          } catch (error) {
-                            console.error("Error updating task worker:", error);
-                          }
+                          const allTasks = loadData<Task[]>('gantt_tasks', []);
+                          const updatedTasks = allTasks.map(t => 
+                            t.id === task.id ? { ...t, workerId: droppedWorkerId } : t
+                          );
+                          saveData('gantt_tasks', updatedTasks);
+                          setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
                         } else if (reorderTaskId && reorderTaskId !== task.id) {
                           const draggedIndex = tasks.findIndex(t => t.id === reorderTaskId);
                           const targetIndex = tasks.findIndex(t => t.id === task.id);
@@ -771,14 +753,20 @@ export default function App() {
                             // Simple reorder by swapping createdAt
                             const draggedTask = tasks[draggedIndex];
                             const targetTask = tasks[targetIndex];
-                            try {
-                              const batch = writeBatch(db);
-                              batch.update(doc(db, 'tasks', draggedTask.id), { createdAt: targetTask.createdAt });
-                              batch.update(doc(db, 'tasks', targetTask.id), { createdAt: draggedTask.createdAt });
-                              await batch.commit();
-                            } catch (error) {
-                              console.error("Error reordering tasks:", error);
-                            }
+                            
+                            const allTasks = loadData<Task[]>('gantt_tasks', []);
+                            const updatedTasks = allTasks.map(t => {
+                              if (t.id === draggedTask.id) return { ...t, createdAt: targetTask.createdAt };
+                              if (t.id === targetTask.id) return { ...t, createdAt: draggedTask.createdAt };
+                              return t;
+                            });
+                            
+                            // Re-sort location tasks before setting state
+                            const locationTasks = updatedTasks.filter(t => t.locationId === currentLocationId);
+                            locationTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+                            
+                            saveData('gantt_tasks', updatedTasks);
+                            setTasks(locationTasks);
                           }
                         }
                       }}
