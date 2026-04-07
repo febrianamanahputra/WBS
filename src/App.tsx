@@ -94,6 +94,9 @@ export default function App() {
     type: 'move' | 'resize';
   } | null>(null);
 
+  const [draggedWorkerId, setDraggedWorkerId] = useState<string | null>(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
+
   const [paneDrag, setPaneDrag] = useState<{ startX: number; startWidth: number } | null>(null);
   const [leftPaneWidth, setLeftPaneWidth] = useState(320);
 
@@ -552,12 +555,17 @@ export default function App() {
                     onDragStart={(e) => {
                       e.dataTransfer.setData('workerId', w.id);
                       e.dataTransfer.effectAllowed = 'copy';
+                      setDraggedWorkerId(w.id);
                     }}
-                    className="text-xs px-2 py-1 rounded-full border flex items-center gap-1.5 font-medium cursor-grab active:cursor-grabbing group/worker" 
+                    onDragEnd={() => {
+                      setDraggedWorkerId(null);
+                      setDragOverTaskId(null);
+                    }}
+                    className="text-xs px-2 py-1 rounded-none border flex items-center gap-1.5 font-medium cursor-grab active:cursor-grabbing group/worker" 
                     style={{ borderColor: w.color, backgroundColor: `${w.color}15`, color: '#374151' }}
                     title="Tarik ke pekerjaan untuk menugaskan"
                   >
-                    <div className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: w.color }}></div>
+                    <div className="w-2.5 h-2.5 rounded-none shadow-sm" style={{ backgroundColor: w.color }}></div>
                     {w.name}
                     <button 
                       onClick={(e) => {
@@ -702,7 +710,9 @@ export default function App() {
                   const isCompleted = task.status === 'completed';
                   const isOverdue = isBefore(safeTaskEnd, startOfDay(new Date())) && !isCompleted;
 
-                  const worker = workers.find(w => w.id === task.workerId);
+                  const isDragOver = dragOverTaskId === task.id;
+                  const activeWorkerId = isDragOver && draggedWorkerId ? draggedWorkerId : task.workerId;
+                  const worker = workers.find(w => w.id === activeWorkerId);
 
                   let barColorClass = 'text-white';
                   let barStyle: React.CSSProperties = {
@@ -714,13 +724,20 @@ export default function App() {
                     transitionDuration: '200ms'
                   };
 
-                  if (isCompleted) {
+                  if (worker) {
+                    barStyle.backgroundColor = worker.color;
+                    barStyle.borderColor = worker.color;
+                    if (isCompleted && !isDragOver) {
+                      barStyle.opacity = 0.5;
+                    }
+                    if (isDragOver) {
+                      barStyle.filter = 'brightness(1.1)';
+                      barStyle.boxShadow = `0 0 0 2px ${worker.color}40`;
+                    }
+                  } else if (isCompleted) {
                     barColorClass += ' bg-[#107c41]/40 border-[#107c41]/50 text-white/90';
                   } else if (isOverdue) {
                     barColorClass += ' bg-red-500 border-red-600';
-                  } else if (worker) {
-                    barStyle.backgroundColor = worker.color;
-                    barStyle.borderColor = worker.color;
                   } else {
                     barColorClass += ' bg-[#107c41] border-[#185c37]';
                   }
@@ -728,13 +745,22 @@ export default function App() {
                   return (
                     <div 
                       key={task.id} 
-                      className="flex h-12 border-b border-gray-200 group hover:bg-gray-50/50 transition-colors z-10"
+                      className={`flex h-12 border-b border-gray-200 group hover:bg-gray-50/50 transition-colors z-10 ${isDragOver ? 'bg-gray-50' : ''}`}
                       onDragOver={(e) => {
                         e.preventDefault();
                         e.dataTransfer.dropEffect = 'move'; // Allow both copy and move
+                        if (draggedWorkerId && dragOverTaskId !== task.id) {
+                          setDragOverTaskId(task.id);
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverTaskId === task.id) {
+                          setDragOverTaskId(null);
+                        }
                       }}
                       onDrop={async (e) => {
                         e.preventDefault();
+                        setDragOverTaskId(null);
                         
                         const droppedWorkerId = e.dataTransfer.getData('workerId');
                         const reorderTaskId = e.dataTransfer.getData('reorderTaskId');
@@ -804,7 +830,7 @@ export default function App() {
                           </span>
                           {worker && (
                             <div 
-                              className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0" 
+                              className="w-2.5 h-2.5 rounded-none shadow-sm shrink-0" 
                               style={{ backgroundColor: worker.color }}
                               title={`Tukang: ${worker.name}`}
                             />
@@ -842,7 +868,7 @@ export default function App() {
                               type: 'move'
                             });
                           }}
-                          className={`absolute h-7 rounded-sm border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColorClass} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110 ring-2 ring-[#107c41]' : 'z-10'}`}
+                          className={`absolute h-7 rounded-none border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColorClass} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110 ring-2 ring-[#107c41]' : 'z-10'}`}
                           style={barStyle}
                           title={`${task.name} (${format(taskStart, 'd MMM yyyy', { locale: localeId })} - ${format(safeTaskEnd, 'd MMM yyyy', { locale: localeId })})`}
                         >
@@ -866,11 +892,11 @@ export default function App() {
                                 type: 'resize'
                               });
                             }}
-                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center rounded-r-md transition-colors border-l border-white/20 hover:brightness-110"
+                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center rounded-none transition-colors border-l border-white/20 hover:brightness-110"
                             style={{ backgroundColor: worker ? worker.color : 'rgba(0,0,0,0.2)' }}
                             title={worker ? `Tukang: ${worker.name} - Tarik untuk mengubah durasi` : "Tarik untuk mengubah durasi"}
                           >
-                            <div className="w-1 h-3 bg-white/70 rounded-full pointer-events-none" />
+                            <div className="w-1 h-3 bg-white/70 rounded-none pointer-events-none" />
                           </div>
                         </div>
                       </div>
