@@ -1,1 +1,31 @@
 @import "tailwindcss";
+
+@media print {
+  @page {
+    margin: 20mm;
+  }
+  
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    background-color: white !important;
+  }
+
+  .custom-scrollbar {
+    overflow: visible !important;
+  }
+
+  /* Ensure the main container can expand to fit content */
+  .print-expand {
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  /* Fix missing borders at the edge of the table */
+  .print-table-container {
+    border-right: 1px solid #e5e7eb !important;
+    border-bottom: 1px solid #e5e7eb !important;
+  }
+}

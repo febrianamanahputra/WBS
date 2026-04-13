@@ -379,10 +379,10 @@ export default function App() {
   const pendingCount = tasks.length - completedCount;
 
   return (
-    <div className="h-screen w-full bg-gray-50 text-gray-900 font-sans flex flex-col overflow-hidden">
+    <div className="h-screen w-full bg-gray-50 text-gray-900 font-sans flex flex-col overflow-hidden print-expand">
       
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-4">
+      <main className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-4 print-expand">
         
         {/* Header Section */}
         <header className="relative bg-gradient-to-br from-[#107c41] via-[#148f4d] to-[#0a522a] rounded-xl shadow-md border-b border-[#185c37] p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 text-white overflow-hidden">
@@ -587,10 +587,10 @@ export default function App() {
         </div>
 
         {/* Gantt Chart Area */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px] relative">
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px] relative print-expand print-table-container">
           
           {/* Single Scrollable Container */}
-          <div className="flex-1 overflow-auto custom-scrollbar flex flex-col relative bg-white">
+          <div className="flex-1 overflow-auto custom-scrollbar flex flex-col relative bg-white print-expand">
             <div className="w-max min-w-full flex flex-col min-h-full">
               
               {/* Header Row (Sticky Top) */}
@@ -604,7 +604,7 @@ export default function App() {
                   <div className="flex-1 truncate">Daftar Pekerjaan</div>
                   {/* Resizer Handle */}
                   <div 
-                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50"
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50 print-hide"
                     onPointerDown={(e) => {
                       e.preventDefault();
                       setPaneDrag({ startX: e.clientX, startWidth: leftPaneWidth });
@@ -733,13 +733,18 @@ export default function App() {
                     if (isDragOver) {
                       barStyle.filter = 'brightness(1.1)';
                       barStyle.boxShadow = `0 0 0 2px ${worker.color}40`;
+                    } else if (isDragging || isResizing) {
+                      barStyle.boxShadow = `0 0 0 2px ${worker.color}`;
                     }
                   } else if (isCompleted) {
                     barColorClass += ' bg-[#107c41]/40 border-[#107c41]/50 text-white/90';
+                    if (isDragging || isResizing) barStyle.boxShadow = `0 0 0 2px #107c41`;
                   } else if (isOverdue) {
                     barColorClass += ' bg-red-500 border-red-600';
+                    if (isDragging || isResizing) barStyle.boxShadow = `0 0 0 2px #ef4444`;
                   } else {
                     barColorClass += ' bg-[#107c41] border-[#185c37]';
+                    if (isDragging || isResizing) barStyle.boxShadow = `0 0 0 2px #107c41`;
                   }
 
                   return (
@@ -838,7 +843,7 @@ export default function App() {
                         </div>
                         <button 
                           onClick={() => deleteTask(task.id)}
-                          className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                          className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all shrink-0 print-hide"
                           title="Hapus Pekerjaan"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -846,7 +851,7 @@ export default function App() {
                         
                         {/* Resizer Handle for Row */}
                         <div 
-                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50 opacity-0 group-hover:opacity-100"
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#107c41] active:bg-[#107c41] transition-colors z-50 opacity-0 group-hover:opacity-100 print-hide"
                           onPointerDown={(e) => {
                             e.preventDefault();
                             setPaneDrag({ startX: e.clientX, startWidth: leftPaneWidth });
@@ -868,7 +873,7 @@ export default function App() {
                               type: 'move'
                             });
                           }}
-                          className={`absolute h-7 rounded-none border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColorClass} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110 ring-2 ring-[#107c41]' : 'z-10'}`}
+                          className={`absolute h-7 rounded-none border shadow-sm flex items-center px-2 overflow-hidden transition-colors hover:brightness-110 cursor-grab active:cursor-grabbing select-none ${barColorClass} ${(isDragging || isResizing) ? 'z-50 shadow-lg brightness-110' : 'z-10'}`}
                           style={barStyle}
                           title={`${task.name} (${format(taskStart, 'd MMM yyyy', { locale: localeId })} - ${format(safeTaskEnd, 'd MMM yyyy', { locale: localeId })})`}
                         >
@@ -892,7 +897,7 @@ export default function App() {
                                 type: 'resize'
                               });
                             }}
-                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center rounded-none transition-colors border-l border-white/20 hover:brightness-110"
+                            className="absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center rounded-none transition-colors border-l border-white/20 hover:brightness-110 print-hide"
                             style={{ backgroundColor: worker ? worker.color : 'rgba(0,0,0,0.2)' }}
                             title={worker ? `Tukang: ${worker.name} - Tarik untuk mengubah durasi` : "Tarik untuk mengubah durasi"}
                           >
