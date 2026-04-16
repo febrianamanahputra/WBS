@@ -339,39 +339,142 @@ export default function App() {
     }
   };
 
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     const currentLoc = locations.find(l => l.id === currentLocationId);
     const locationName = currentLoc ? currentLoc.name : 'Proyek';
     
-    const dataToExport = tasks.map(task => {
-      const worker = workers.find(w => w.id === task.workerId);
-      return {
-        'Nama Pekerjaan': task.name,
-        'Tukang': worker ? worker.name : 'Belum Ditugaskan',
-        'Mulai': format(parseISO(task.startDate), 'd MMM yyyy', { locale: localeId }),
-        'Selesai': format(parseISO(task.deadline), 'd MMM yyyy', { locale: localeId }),
-        'Durasi (Hari Kerja)': task.duration || 0,
-        'Status': task.status === 'completed' ? 'Selesai' : 'Tertunda'
-      };
+    // Dynamic import to keep bundle small if possible, but we'll import at top
+    const ExcelJS = (await import('exceljs')).default;
+    const { saveAs } = await import('file-saver');
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Action Plan');
+
+    // Setup headers
+    const mainHeaderRow = worksheet.getRow(1);
+    const subHeaderRow = worksheet.getRow(2);
+    
+    // Static columns
+    mainHeaderRow.getCell(1).value = 'Daftar Pekerjaan';
+    subHeaderRow.getCell(1).value = 'Pekerjaan';
+    worksheet.getColumn(1).width = 30;
+
+    mainHeaderRow.getCell(2).value = 'Tukang';
+    subHeaderRow.getCell(2).value = 'Tukang';
+    worksheet.getColumn(2).width = 20;
+
+    let currentColumnIndex = 3;
+    let currentMonth = '';
+    let currentMonthStartCol = 3;
+    
+    // Add timeline headers
+    timelineRange.forEach((day, index) => {
+      const monthStr = format(day, "MMMM yyyy", { locale: localeId });
+      if (monthStr !== currentMonth) {
+        if (currentMonth !== '') {
+          worksheet.mergeCells(1, currentMonthStartCol, 1, currentColumnIndex - 1);
+          const monthCell = mainHeaderRow.getCell(currentMonthStartCol);
+          monthCell.alignment = { horizontal: 'center' };
+          monthCell.font = { bold: true };
+          monthCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F2F1' } };
+        }
+        currentMonth = monthStr;
+        currentMonthStartCol = currentColumnIndex;
+        mainHeaderRow.getCell(currentMonthStartCol).value = monthStr;
+      }
+
+      // Day subheader
+      const isSunday = day.getDay() === 0;
+      const dayCell = subHeaderRow.getCell(currentColumnIndex);
+      dayCell.value = `${format(day, 'd')}\n${format(day, dayNameFormat, { locale: localeId })}`;
+      dayCell.alignment = { horizontal: 'center', wrapText: true };
+      dayCell.font = { size: 9, color: { argb: isSunday ? 'FFFF0000' : 'FF555555' } };
+      if (isSunday) {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+      }
+      
+      worksheet.getColumn(currentColumnIndex).width = 4;
+      currentColumnIndex++;
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
-    
-    // Auto-size columns
-    const colWidths = [
-      { wch: 30 }, // Nama Pekerjaan
-      { wch: 20 }, // Tukang
-      { wch: 15 }, // Mulai
-      { wch: 15 }, // Selesai
-      { wch: 15 }, // Durasi
-      { wch: 15 }, // Status
-    ];
-    worksheet['!cols'] = colWidths;
+    // Merge the last month
+    if (currentMonth !== '') {
+      worksheet.mergeCells(1, currentMonthStartCol, 1, currentColumnIndex - 1);
+      const monthCell = mainHeaderRow.getCell(currentMonthStartCol);
+      monthCell.alignment = { horizontal: 'center' };
+      monthCell.font = { bold: true };
+      monthCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F2F1' } };
+    }
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Action Plan');
-    
-    XLSX.writeFile(workbook, `Renovki_Action_Plan_${locationName.replace(/\s+/g, '_')}.xlsx`);
+    // Freeze panes for scrolling
+    worksheet.views = [
+      { state: 'frozen', xSplit: 2, ySplit: 2 }
+    ];
+
+    // Add tasks
+    let rowIndex = 3;
+    tasks.forEach((task) => {
+      const row = worksheet.getRow(rowIndex);
+      const worker = workers.find(w => w.id === task.workerId);
+      
+      row.getCell(1).value = task.name;
+      row.getCell(2).value = worker ? worker.name : 'Belum Ditugaskan';
+      
+      const taskStart = parseISO(task.startDate);
+      const taskEnd = parseISO(task.deadline);
+      const safeTaskEnd = isBefore(taskEnd, taskStart) ? taskStart : taskEnd;
+      const isCompleted = task.status === 'completed';
+      const isOverdue = isBefore(safeTaskEnd, startOfDay(new Date())) && !isCompleted;
+
+      let bgColor = 'FF107C41'; // Default green
+      if (worker) {
+        bgColor = 'FF' + worker.color.replace('#', '');
+      } else if (isOverdue) {
+        bgColor = 'FFEF4444'; // Red
+      }
+      
+      timelineRange.forEach((day, index) => {
+        const colIndex = index + 3;
+        const cell = row.getCell(colIndex);
+        const isSunday = day.getDay() === 0;
+        
+        // Background for weekends
+        if (isSunday) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9FAFB' } };
+        }
+
+        // Draw task bar
+        if (!isBefore(day, taskStart) && !isBefore(safeTaskEnd, day) && !isSunday) {
+          const fillData: any = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+          cell.fill = fillData;
+        } else if (!isBefore(day, taskStart) && !isBefore(safeTaskEnd, day) && isSunday && isCompleted) {
+          // Keep it colored but maybe lighter or just skip coloring sundays for tasks
+          const fillData: any = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+          cell.fill = fillData;
+        }
+
+        // Apply opacity roughly for completed tasks 
+        // ExcelJS doesn't directly support opacity for pattern fills, so we just use the solid color
+      });
+
+      rowIndex++;
+    });
+
+    // Add borders to everything
+    worksheet.eachRow((row, rIdx) => {
+      row.eachCell({ includeEmpty: true }, (cell, cIdx) => {
+        // Apply basic border
+        cell.border = {
+          top: {style:'thin', color: {argb:'FFEEEEEE'}},
+          left: {style:'thin', color: {argb:'FFEEEEEE'}},
+          bottom: {style:'thin', color: {argb:'FFEEEEEE'}},
+          right: {style:'thin', color: {argb:'FFEEEEEE'}}
+        };
+      });
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    saveAs(new Blob([buffer]), `Renovki_Action_Plan_${locationName.replace(/\s+/g, '_')}.xlsx`);
   };
 
   // Calculate timeline range
@@ -421,7 +524,7 @@ export default function App() {
       <main className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-4 print-expand">
         
         {/* Header Section */}
-        <header className="relative bg-gradient-to-br from-[#107c41] via-[#148f4d] to-[#0a522a] rounded-xl shadow-md border-b border-[#185c37] p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 text-white overflow-hidden">
+        <header className="relative bg-gradient-to-br from-[#107c41] via-[#148f4d] to-[#0a522a] rounded-xl shadow-md border-b border-[#185c37] p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 text-white overflow-hidden print:hidden">
           {/* Watermark */}
           <div className="absolute -right-10 -top-10 opacity-10 pointer-events-none">
             <FolderKanban className="w-48 h-48" />
