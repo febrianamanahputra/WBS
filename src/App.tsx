@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { format, differenceInDays, isBefore, startOfDay, parseISO, eachDayOfInterval, addDays, isSameDay, min, addMonths } from 'date-fns';
 import { id as localeId } from 'date-fns/locale';
-import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban, UserPlus, X, GripVertical, MapPin, Printer } from 'lucide-react';
+import { Plus, CheckCircle2, Circle, Trash2, Calendar, Clock, AlertCircle, FolderKanban, UserPlus, X, GripVertical, MapPin, Printer, Download } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { Task, Worker, Location } from './types';
 
 const loadData = <T,>(key: string, defaultValue: T): T => {
@@ -338,6 +339,41 @@ export default function App() {
     }
   };
 
+  const exportToExcel = () => {
+    const currentLoc = locations.find(l => l.id === currentLocationId);
+    const locationName = currentLoc ? currentLoc.name : 'Proyek';
+    
+    const dataToExport = tasks.map(task => {
+      const worker = workers.find(w => w.id === task.workerId);
+      return {
+        'Nama Pekerjaan': task.name,
+        'Tukang': worker ? worker.name : 'Belum Ditugaskan',
+        'Mulai': format(parseISO(task.startDate), 'd MMM yyyy', { locale: localeId }),
+        'Selesai': format(parseISO(task.deadline), 'd MMM yyyy', { locale: localeId }),
+        'Durasi (Hari Kerja)': task.duration || 0,
+        'Status': task.status === 'completed' ? 'Selesai' : 'Tertunda'
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    
+    // Auto-size columns
+    const colWidths = [
+      { wch: 30 }, // Nama Pekerjaan
+      { wch: 20 }, // Tukang
+      { wch: 15 }, // Mulai
+      { wch: 15 }, // Selesai
+      { wch: 15 }, // Durasi
+      { wch: 15 }, // Status
+    ];
+    worksheet['!cols'] = colWidths;
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Action Plan');
+    
+    XLSX.writeFile(workbook, `Renovki_Action_Plan_${locationName.replace(/\s+/g, '_')}.xlsx`);
+  };
+
   // Calculate timeline range
   const timelineStart = useMemo(() => {
     if (tasks.length === 0) return startOfDay(new Date());
@@ -449,6 +485,14 @@ export default function App() {
           </div>
           
           <div className="relative z-10 flex gap-3 items-center">
+            <button 
+              onClick={exportToExcel} 
+              className="print:hidden p-2 bg-white/10 hover:bg-[#107c41] rounded-lg transition-colors text-white flex items-center gap-2 text-sm font-semibold border border-white/20 shadow-sm h-[52px]"
+              title="Download Excel"
+            >
+              <Download className="w-5 h-5" />
+              <span className="hidden sm:inline">Excel</span>
+            </button>
             <button 
               onClick={() => window.print()} 
               className="print:hidden p-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-white flex items-center gap-2 text-sm font-semibold border border-white/20 shadow-sm mr-2 h-[52px]"
