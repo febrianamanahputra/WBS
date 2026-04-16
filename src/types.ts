@@ -1,12 +1,14 @@
 export interface Location {
   id: string;
   name: string;
+  projectEndDate?: string;
 }
 
 export interface Worker {
   id: string;
   name: string;
   color: string;
+  locationId: string;
 }
 
 export interface Task {
@@ -18,4 +20,5 @@ export interface Task {
   duration?: number;
   status: 'pending' | 'completed';
   workerId?: string;
+  locationId: string;
 }

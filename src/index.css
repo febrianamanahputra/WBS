@@ -3,6 +3,7 @@
 @media print {
   @page {
     margin: 20mm;
+    size: landscape;
   }
   
   body {
@@ -20,12 +21,5 @@
     height: auto !important;
     min-height: auto !important;
     overflow: visible !important;
-    display: block !important;
-  }
-
-  /* Fix missing borders at the edge of the table */
-  .print-table-container {
-    border-right: 1px solid #e5e7eb !important;
-    border-bottom: 1px solid #e5e7eb !important;
   }
 }

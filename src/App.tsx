@@ -587,11 +587,11 @@ export default function App() {
         </div>
 
         {/* Gantt Chart Area */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px] relative print-expand print-table-container">
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-[400px] relative print-expand">
           
           {/* Single Scrollable Container */}
           <div className="flex-1 overflow-auto custom-scrollbar flex flex-col relative bg-white print-expand">
-            <div className="w-max min-w-full flex flex-col min-h-full">
+            <div className="w-max min-w-full flex flex-col min-h-full border-r border-b border-gray-200">
               
               {/* Header Row (Sticky Top) */}
               <div className="flex sticky top-0 z-40 bg-white shadow-sm h-16">
