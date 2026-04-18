@@ -50,6 +50,16 @@ const getWorkingDaysCount = (startDate: Date, endDate: Date): number => {
   return count;
 };
 
+const sortTasksByDate = (tasks: Task[]) => {
+  return [...tasks].sort((a, b) => {
+    const timeDiff = new Date(a.startDate).getTime() - new Date(b.startDate).getTime();
+    if (timeDiff === 0) {
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    }
+    return timeDiff;
+  });
+};
+
 declare global {
   interface Window {
     recaptchaVerifier: any;
@@ -136,8 +146,7 @@ export default function App() {
 
     const allTasks = loadData<Task[]>('gantt_tasks', []);
     const locationTasks = allTasks.filter(t => t.locationId === currentLocationId);
-    locationTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    setTasks(locationTasks);
+    setTasks(sortTasksByDate(locationTasks));
 
     const allWorkers = loadData<Worker[]>('gantt_workers', []);
     const locationWorkers = allWorkers.filter(w => w.locationId === currentLocationId);
@@ -207,7 +216,7 @@ export default function App() {
             : t
         );
         saveData('gantt_tasks', updatedTasks);
-        setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
+        setTasks(sortTasksByDate(updatedTasks.filter(t => t.locationId === currentLocationId)));
       }
       setDragState(null);
     };
@@ -252,7 +261,7 @@ export default function App() {
     const allTasks = loadData<Task[]>('gantt_tasks', []);
     allTasks.push(newTask);
     saveData('gantt_tasks', allTasks);
-    setTasks(prev => [...prev, newTask]);
+    setTasks(prev => sortTasksByDate([...prev, newTask]));
     setNewTaskName('');
   };
 
@@ -285,7 +294,7 @@ export default function App() {
     const allTasks = loadData<Task[]>('gantt_tasks', []);
     const updatedTasks = allTasks.map(t => t.workerId === id ? { ...t, workerId: undefined } : t);
     saveData('gantt_tasks', updatedTasks);
-    setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
+    setTasks(sortTasksByDate(updatedTasks.filter(t => t.locationId === currentLocationId)));
   };
 
   const handleAddLocation = async (e: React.FormEvent) => {
@@ -315,7 +324,7 @@ export default function App() {
         t.id === id ? { ...t, status: t.status === 'pending' ? 'completed' : 'pending' } : t
       );
       saveData('gantt_tasks', updatedTasks);
-      setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
+      setTasks(sortTasksByDate(updatedTasks.filter(t => t.locationId === currentLocationId)));
     }
   };
 
@@ -323,7 +332,7 @@ export default function App() {
     const allTasks = loadData<Task[]>('gantt_tasks', []);
     const updatedTasks = allTasks.filter(t => t.id !== id);
     saveData('gantt_tasks', updatedTasks);
-    setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
+    setTasks(sortTasksByDate(updatedTasks.filter(t => t.locationId === currentLocationId)));
   };
 
   const extendProjectEndDate = async () => {
@@ -923,7 +932,7 @@ export default function App() {
                             t.id === task.id ? { ...t, workerId: droppedWorkerId } : t
                           );
                           saveData('gantt_tasks', updatedTasks);
-                          setTasks(updatedTasks.filter(t => t.locationId === currentLocationId));
+                          setTasks(sortTasksByDate(updatedTasks.filter(t => t.locationId === currentLocationId)));
                         } else if (reorderTaskId && reorderTaskId !== task.id) {
                           const draggedIndex = tasks.findIndex(t => t.id === reorderTaskId);
                           const targetIndex = tasks.findIndex(t => t.id === task.id);
@@ -941,10 +950,8 @@ export default function App() {
                             
                             // Re-sort location tasks before setting state
                             const locationTasks = updatedTasks.filter(t => t.locationId === currentLocationId);
-                            locationTasks.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-                            
                             saveData('gantt_tasks', updatedTasks);
-                            setTasks(locationTasks);
+                            setTasks(sortTasksByDate(locationTasks));
                           }
                         }
                       }}
